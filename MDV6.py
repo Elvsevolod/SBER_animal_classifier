@@ -3,7 +3,10 @@ import cv2
 import os
 import time
 from PytorchWildlife.models import detection as pw_detection
+from PytorchWildlife.models import classification as pw_classification
 import numpy as np
+from PIL import Image
+
 
 # *** Для запуска на процессоре раскомментировать ***
 # *** Для запуска на видеокарте закомментировать ***
@@ -17,14 +20,20 @@ OUTPUT_DIR = "crops" # Папка для кропов
 CALIBRATING = 1 # Управляющий флаг для запуска предподготовки
 
 BATCH_SIZE = 70 # Для обычных запусков оптимальнее 8 - 32
-MODEL_VERSION = "MDV6-yolov10-c" # буква c - маленькая модель, буква e - большая модель
+MODEL_VERSION = "MDV6-yolov10-c" # Это детектор; буква c - маленькая модель, буква e - большая модель
 # Список доступных моделей: MDV6-yolov9-c, MDV6-yolov9-e, MDV6-yolov10-c, MDV6-yolov10-e, MDV6-rtdetr-c
 
 os.makedirs(OUTPUT_DIR, exist_ok = True) # Создание папки для кропов
 
 
-# Загрузка модели
-model = pw_detection.MegaDetectorV6(version = MODEL_VERSION)
+# Загрузка моделей
+# Автоматическое определение устройства на основе настроек окружения
+device = torch.device("cuda" if torch.cuda.is_available() and os.environ.get("CUDA_VISIBLE_DEVICES") != "-1" else "cpu")
+print(f"Используемое устройство: {device}")
+model = pw_detection.MegaDetectorV6(version = MODEL_VERSION, device=device) # Детектор
+clf_model = pw_classification.DeepfauneClassifier() # Классификатор (DeepFaune)
+clf_model.to(device)
+clf_model.eval()
 
 
 # Предподготовка. При первом запуске компилируются низкоуровневые инструкции, что приводит к некорректному измерению времени работы
@@ -42,7 +51,7 @@ if (CALIBRATING == 1):
             print("\nПрогон №" + str(i + 1))
             i = model.batch_image_detection(warmup_imgs, batch_size = BATCH_SIZE)
 
-            if torch.cuda.is_available() == True:
+            if device.type == "cuda":
                 torch.cuda.synchronize()
 
     print(f"\nПредподготовка завершена за {time.time() - start_warmup:.2f} сек.")
@@ -74,11 +83,12 @@ for i in range(0, len(image_paths), BATCH_SIZE):
 
     # Запуск модели
     print("Batch №" + str(iteration))
+    print("Время детекции. Полное время в конце работы")
     iteration += 1
     results = model.batch_image_detection(batch_imgs, batch_size = BATCH_SIZE)
     print()
 
-    # Сохранение кропов
+    # Сохранение кропов и классификация
     for img, res, img_path in zip(batch_imgs, results, current_paths):
         h, w, _ = img.shape
         base_name = os.path.splitext(os.path.basename(img_path))[0]
@@ -94,8 +104,31 @@ for i in range(0, len(image_paths), BATCH_SIZE):
                 x1, y1, x2, y2 = int(bbox[0] * w), int(bbox[1] * h), int(bbox[2] * w), int(bbox[3] * h)
 
             crop = img[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+
             if crop.size > 0:
-                cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_crop_{j}.jpg", crop)
+                # Классификация кропа
+                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                crop_pil = Image.fromarray(crop_rgb)
+
+                with torch.no_grad():
+                    # Трансформация и перенос на выбранное устройство (CPU или GPU)
+                    input_tensor = clf_model.transform(crop_pil).unsqueeze(0).to(device)
+                    logits = clf_model.predictor(input_tensor)
+                    prediction = torch.argmax(logits, dim=1).item()
+
+                # Получение метки класса
+                label = str(clf_model.CLASS_NAMES[prediction]).lower()
+
+                if "fox" in label:
+                    animal_class = "1_fox"
+                elif "wolf" in label:
+                    animal_class = "2_wolf"
+                else:
+                    animal_class = "3_other"
+
+                class_path = os.path.join(OUTPUT_DIR, animal_class)
+                os.makedirs(class_path, exist_ok=True)
+                cv2.imwrite(f"{class_path}/{animal_class}_{base_name}_crop_{j}.jpg", crop)
 
 end_time = time.time()
 total_time = end_time - start_time
