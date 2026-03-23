@@ -2,8 +2,8 @@ import torch
 import cv2
 import os
 import time
+import torchvision.models as models
 from PytorchWildlife.models import detection as pw_detection
-from PytorchWildlife.models import classification as pw_classification
 import numpy as np
 from PIL import Image
 
@@ -31,7 +31,7 @@ os.makedirs(OUTPUT_DIR, exist_ok = True) # Создание папки для к
 device = torch.device("cuda" if torch.cuda.is_available() and os.environ.get("CUDA_VISIBLE_DEVICES") != "-1" else "cpu")
 print(f"Используемое устройство: {device}")
 model = pw_detection.MegaDetectorV6(version = MODEL_VERSION, device=device) # Детектор
-clf_model = pw_classification.DeepfauneClassifier() # Классификатор (DeepFaune)
+clf_model = models.resnet50(weights='IMAGENET1K_V1') # Классификатор (ResNet50)
 clf_model.to(device)
 clf_model.eval()
 
